@@ -1,0 +1,4 @@
+# Runtime (pinned). Everything else is the Python standard library.
+beautifulsoup4==4.13.4
+soupsieve==2.10
+typing_extensions==4.16.0
