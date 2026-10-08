@@ -74,7 +74,8 @@ def run(args) -> dict:
 
     def one(o):
         try:
-            return research(o, hits.get(o), f, judge, cap, run_id, deep=not args.shallow)
+            prior = store.latest(o)[0] if store else None
+            return research(o, hits.get(o), f, judge, cap, run_id, deep=not args.shallow, prior=prior)
         except BudgetExhausted as e:
             return failed_envelope(o, run_id, f"budget exhausted before research: {e}")
         except Exception as e:  # noqa: BLE001

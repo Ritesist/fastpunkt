@@ -12,6 +12,15 @@ from .summary import derive_signals, summarise
 SECTIONS = ["legal_identity", "annual_accounts", "leadership_workplaces", "website_profiles", "hiring_activity"]
 
 
+DESC_MIN_CONF = 0.3  # below this the model's sentence choice is a coin flip; fall back to the meta description
+
+
+def _prior_values(prior: dict | None, field: str) -> list:
+    if not prior:
+        return []
+    return [c["value"] for c in prior.get("claims", []) if c["field"] == field and c["availability"] == "available"]
+
+
 class CompanyBudget:
     """Per-company request cap on top of the global budget, so one large site cannot starve the batch."""
     def __init__(self, f: Fetcher, cap: int):
@@ -27,7 +36,8 @@ class CompanyBudget:
         return getattr(self.f, k)
 
 
-def research(orgnr: str, entity_hit, f: Fetcher, judge: J.Judge, cap: int, run_id: str, deep: bool = True) -> dict:
+def research(orgnr: str, entity_hit, f: Fetcher, judge: J.Judge, cap: int, run_id: str, deep: bool = True,
+             prior: dict | None = None) -> dict:
     t0 = time.time()
     started = utcnow()
     cs = ClaimSet()
@@ -80,7 +90,7 @@ def research(orgnr: str, entity_hit, f: Fetcher, judge: J.Judge, cap: int, run_i
             fail("leadership_workplaces", e)
         # 4-5. Website, company-owned profiles, hiring and dated activity
         try:
-            site_research(cs, sec, entity, orgnr, cf, judge, candidates_out, deep)
+            site_research(cs, sec, entity, orgnr, cf, judge, candidates_out, deep, prior)
         except BudgetExhausted as e:
             for s in ("website_profiles", "hiring_activity"):
                 if sec[s]["state"] == "failed" and sec[s]["reason"] == "not attempted":
@@ -134,7 +144,7 @@ def _site_ev(cs: ClaimSet, pg: W.Page, span: str, method: str) -> str:
                            retrieved_at=pg.retrieved_at, content_sha256=pg.sha256, claim_span=span[:300], extraction_method=method)
 
 
-def site_research(cs, sec, entity, orgnr, cf, judge, candidates_out, deep):
+def site_research(cs, sec, entity, orgnr, cf, judge, candidates_out, deep, prior=None):
     S, H = "website_profiles", "hiring_activity"
     robots = W.Robots(cf)
     cands = W.candidates(entity)
@@ -240,7 +250,14 @@ def site_research(cs, sec, entity, orgnr, cf, judge, candidates_out, deep):
     # Self-description: Jev selects a sentence; the text is copied verbatim from the page.
     sentences = W.description_candidates(pages)[:30]
     d = ans.get("description") or {}
-    if d.get("choice", "none") != "none" and d.get("choice", "").startswith("S"):
+    # Stable refresh: if the sentence published last time is still on the page word for word, keep it,
+    # so a different-but-equally-valid model choice is not reported as a change.
+    kept = next((v for v in _prior_values(prior, "business_description")
+                 if v in sentences or v == pg.meta_description), None)
+    if kept:
+        cs.add(S, "business_description", kept, [_site_ev(cs, pg, kept, "previous_selection_still_verbatim_on_page")],
+               confidence=conf, note="company's own wording")
+    elif d.get("choice", "none") != "none" and d.get("choice", "").startswith("S") and d.get("confidence", 0) >= DESC_MIN_CONF:
         i = int(d["choice"][1:])
         if i < len(sentences):
             cs.add(S, "business_description", sentences[i], [_site_ev(cs, pg, sentences[i], "typesafe_choice_verbatim")],
